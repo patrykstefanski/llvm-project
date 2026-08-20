@@ -459,6 +459,14 @@ private:
   /// A queue of (optional) vtables that may be emitted opportunistically.
   std::vector<const CXXRecordDecl *> OpportunisticVTables;
 
+  /// Records whose vtable must be emitted in this module even though their key
+  /// function has no C++ body here -- the body is provided externally (e.g. by
+  /// a Swift `@cxx @implementation` method). Consulted by isVTableExternal() and
+  /// getVTableLinkage() so such a vtable gets the strong linkage it would have
+  /// had if the key function were defined here. Populated via
+  /// emitVTableForExternalKeyFunction().
+  llvm::DenseSet<const CXXRecordDecl *> ExternalKeyFunctionVTables;
+
   /// List of global values which are required to be present in the object file;
   /// bitcast to i8*. This is used for forcing visibility of symbols which may
   /// otherwise be optimized out.
@@ -1460,6 +1468,16 @@ public:
   void EmitExternalDeclaration(const DeclaratorDecl *D);
 
   void EmitVTable(CXXRecordDecl *Class);
+
+  /// Mark \p RD as a class whose vtable must be emitted in this module even
+  /// though its key function's body is provided externally (e.g. by a Swift
+  /// `@cxx @implementation` method). See emitVTableForExternalKeyFunction().
+  void addExternalKeyFunctionVTable(const CXXRecordDecl *RD) {
+    ExternalKeyFunctionVTables.insert(RD);
+  }
+  bool isExternalKeyFunctionVTable(const CXXRecordDecl *RD) const {
+    return ExternalKeyFunctionVTables.count(RD);
+  }
 
   void RefreshTypeCacheForClass(const CXXRecordDecl *Class);
 

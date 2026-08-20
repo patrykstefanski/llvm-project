@@ -101,6 +101,15 @@ arrangeFreeFunctionCall(CodeGenModule &CGM, CanQualType returnType,
 ImplicitCXXConstructorArgs
 getImplicitCXXConstructorArgs(CodeGenModule &CGM, const CXXConstructorDecl *D);
 
+/// Emit the ABI tables that the Itanium C++ ABI would normally emit in the
+/// translation unit that defines \p method's body, given that body is provided
+/// externally (e.g. by a Swift `@cxx @implementation` method): \p method's
+/// `this`/return-adjusting vtable thunks, and -- if \p method is its class's key
+/// function -- the class's vtable + RTTI. No-op if \p method is not virtual, and
+/// idempotent for the vtable.
+void emitExternalVirtualMethodTables(CodeGenModule &CGM,
+                                     const CXXMethodDecl *method);
+
 llvm::Value *
 getCXXDestructorImplicitParam(CodeGenModule &CGM, llvm::BasicBlock *InsertBlock,
                               llvm::BasicBlock::iterator InsertPoint,

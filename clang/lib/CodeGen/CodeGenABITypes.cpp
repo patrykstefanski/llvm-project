@@ -76,6 +76,29 @@ const CGFunctionInfo &CodeGen::arrangeFreeFunctionCall(
       returnType, FnInfoOpts::None, argTypes, info, paramInfos, args);
 }
 
+void CodeGen::emitExternalVirtualMethodTables(CodeGenModule &CGM,
+                                              const clang::CXXMethodDecl *method) {
+  if (!method->isVirtual())
+    return;
+  const CXXRecordDecl *RD = method->getParent();
+  // The Itanium ABI emits a class's (strong) vtable + RTTI in the translation
+  // unit that defines the class's key function's body. Here that body is
+  // provided externally (e.g. by a Swift `@cxx @implementation` method), so emit
+  // them from this module when `method` is the key function. (Mark RD so
+  // isVTableExternal()/getVTableLinkage() pick strong linkage; EmitVTable is
+  // idempotent.)
+  if (CGM.getContext().getCurrentKeyFunction(RD) == method->getCanonicalDecl()) {
+    CGM.addExternalKeyFunctionVTable(RD);
+    CGM.EmitVTable(const_cast<CXXRecordDecl *>(RD));
+  }
+  // The Itanium ABI likewise emits a method's `this`/return-adjusting thunks in
+  // the TU that defines the method's body (e.g. the secondary-vtable thunk for a
+  // method overriding a non-primary base, or a covariant-return thunk). With the
+  // body external, emit those thunks here too, so they are defined rather than
+  // left as undefined references in the vtable.
+  CGM.getVTables().EmitThunks(GlobalDecl(method));
+}
+
 ImplicitCXXConstructorArgs
 CodeGen::getImplicitCXXConstructorArgs(CodeGenModule &CGM,
                                        const CXXConstructorDecl *D) {

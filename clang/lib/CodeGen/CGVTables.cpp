@@ -1102,8 +1102,15 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
     if (keyFunction && keyFunction->hasBody(def))
       keyFunction = cast<CXXMethodDecl>(def);
 
+    // The key function's body is provided externally (e.g. by a Swift
+    // `@cxx @implementation` method). Treat the vtable as strongly defined here
+    // so we emit the canonical ExternalLinkage vtable rather than asserting or
+    // emitting an available_externally stub.
+    bool ExternalKeyFn = !IsInNamedModule && isExternalKeyFunctionVTable(RD);
+
     bool IsExternalDefinition =
-        IsInNamedModule ? RD->shouldEmitInExternalSource() : !def;
+        IsInNamedModule ? RD->shouldEmitInExternalSource()
+                        : (ExternalKeyFn ? false : !def);
 
     TemplateSpecializationKind Kind =
         IsInNamedModule ? RD->getTemplateSpecializationKind()
@@ -1113,7 +1120,8 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
     case TSK_Undeclared:
     case TSK_ExplicitSpecialization:
       assert(
-          (IsInNamedModule || def || CodeGenOpts.OptimizationLevel > 0 ||
+          (IsInNamedModule || def || ExternalKeyFn ||
+           CodeGenOpts.OptimizationLevel > 0 ||
            CodeGenOpts.getDebugInfo() != llvm::codegenoptions::NoDebugInfo) &&
           "Shouldn't query vtable linkage without the class in module units, "
           "key function, optimizations, or debug info");
@@ -1217,6 +1225,11 @@ CodeGenVTables::GenerateClassData(const CXXRecordDecl *RD) {
 /// vtables when unnecessary.
 bool CodeGenVTables::isVTableExternal(const CXXRecordDecl *RD) {
   assert(RD->isDynamicClass() && "Non-dynamic classes have no VTable.");
+
+  // The vtable for a class whose key function is defined externally (e.g. a
+  // Swift `@cxx @implementation` method) is emitted here, not external.
+  if (CGM.isExternalKeyFunctionVTable(RD))
+    return false;
 
   // We always synthesize vtables if they are needed in the MS ABI. MSVC doesn't
   // emit them even if there is an explicit template instantiation.

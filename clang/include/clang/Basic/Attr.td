@@ -2133,6 +2133,13 @@ def LifetimeBound : DeclOrTypeAttr {
   let SimpleHandler = 1;
 }
 
+def LifetimeExclusive : DeclOrTypeAttr {
+  let Spellings = [Clang<"lifetime_exclusive", 1>];
+  let Subjects = SubjectList<[ParmVar, ImplicitObjectParameter], ErrorDiag>;
+  let Documentation = [LifetimeExclusiveDocs];
+  let SimpleHandler = 1;
+}
+
 def LifetimeCaptureBy : DeclOrTypeAttr {
   let Spellings = [Clang<"lifetime_capture_by">,
                    Clang<"lifetime_capture_by_this">,

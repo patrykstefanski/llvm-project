@@ -9007,6 +9007,19 @@ static void HandleLifetimeBoundAttr(TypeProcessingState &State,
       << ExpectedParameterOrImplicitObjectParameter;
 }
 
+static void HandleLifetimeExclusiveAttr(TypeProcessingState &State,
+                                        QualType &CurType, ParsedAttr &Attr) {
+  if (State.getDeclarator().isDeclarationOfFunction()) {
+    CurType = State.getAttributedType(
+        createSimpleAttr<LifetimeExclusiveAttr>(State.getSema().Context, Attr),
+        CurType, CurType);
+    return;
+  }
+  State.getSema().Diag(Attr.getLoc(), diag::err_attribute_wrong_decl_type)
+      << Attr << Attr.isRegularKeywordAttribute()
+      << ExpectedParameterOrImplicitObjectParameter;
+}
+
 static void HandleLifetimeCaptureByAttr(TypeProcessingState &State,
                                         QualType &CurType, ParsedAttr &PA) {
   if (State.getDeclarator().isDeclarationOfFunction()) {
@@ -9201,6 +9214,10 @@ static void processTypeAttrs(TypeProcessingState &state, QualType &type,
     case ParsedAttr::AT_LifetimeBound:
       if (TAL == TAL_DeclChunk)
         HandleLifetimeBoundAttr(state, type, attr);
+      break;
+    case ParsedAttr::AT_LifetimeExclusive:
+      if (TAL == TAL_DeclChunk)
+        HandleLifetimeExclusiveAttr(state, type, attr);
       break;
     case ParsedAttr::AT_LifetimeCaptureBy:
       if (TAL == TAL_DeclChunk)

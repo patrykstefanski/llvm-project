@@ -108,6 +108,77 @@ bool implicitObjectParamIsLifetimeBound(const FunctionDecl *FD) {
   return isNormalAssignmentOperator(FD);
 }
 
+static bool hasLifetimeExclusiveOnFunctionType(const FunctionDecl *FD) {
+  const TypeSourceInfo *TSI = FD->getTypeSourceInfo();
+  if (!TSI)
+    return false;
+  TypeLoc TL = TSI->getTypeLoc();
+  while (auto ATL = TL.getAsAdjusted<AttributedTypeLoc>()) {
+    if (ATL.getAttrAs<LifetimeExclusiveAttr>())
+      return true;
+    TL = ATL.getModifiedLoc();
+  }
+  return false;
+}
+
+bool implicitObjectParamIsLifetimeExclusive(const FunctionDecl *FD) {
+  FD = getDeclWithMergedLifetimeBoundAttrs(FD);
+  if (!FD)
+    return false;
+  // Attributes on function types (the implicit object parameter) are not
+  // merged across redeclarations; check all of them.
+  auto CheckRedecls = [](const FunctionDecl *F) {
+    return llvm::any_of(F->redecls(), hasLifetimeExclusiveOnFunctionType);
+  };
+  if (CheckRedecls(FD))
+    return true;
+  if (const FunctionDecl *Pattern = FD->getTemplateInstantiationPattern())
+    return CheckRedecls(Pattern);
+  return false;
+}
+
+bool isLifetimeExclusiveParam(const ParmVarDecl *PVD) {
+  if (PVD->hasAttr<LifetimeExclusiveAttr>())
+    return true;
+  // Parameter attributes are only propagated to *later* redeclarations, so a
+  // definition preceding an annotated declaration (or the parameter of an
+  // instantiation whose pattern is annotated) needs a scan.
+  const auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext());
+  if (!FD)
+    return false;
+  unsigned Idx = PVD->getFunctionScopeIndex();
+  auto ParamHasAttr = [Idx](const FunctionDecl *F) {
+    return Idx < F->getNumParams() &&
+           F->getParamDecl(Idx)->hasAttr<LifetimeExclusiveAttr>();
+  };
+  if (llvm::any_of(FD->redecls(), ParamHasAttr))
+    return true;
+  if (const FunctionDecl *Pattern = FD->getTemplateInstantiationPattern())
+    return llvm::any_of(Pattern->redecls(), ParamHasAttr);
+  return false;
+}
+
+QualType getGslPointerDerefType(QualType QT) {
+  const CXXRecordDecl *RD = QT->getAsCXXRecordDecl();
+  if (!RD)
+    return QualType();
+  const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(RD);
+  const PointerAttr *PA = RD->getAttr<PointerAttr>();
+  if (!PA && CTSD)
+    PA = CTSD->getSpecializedTemplate()
+             ->getTemplatedDecl()
+             ->getAttr<PointerAttr>();
+  if (!PA)
+    return QualType();
+  if (const TypeSourceInfo *TSI = PA->getDerefTypeLoc())
+    return TSI->getType();
+  if (CTSD)
+    for (const TemplateArgument &TA : CTSD->getTemplateArgs().asArray())
+      if (TA.getKind() == TemplateArgument::Type)
+        return TA.getAsType();
+  return QualType();
+}
+
 FunctionCallInfo::FunctionCallInfo(const Expr *Call) {
   if (!Call)
     return;
@@ -239,6 +310,7 @@ bool shouldTrackImplicitObjectArg(const Expr &ImplicitObjectArgument,
     switch (Callee->getOverloadedOperator()) {
     case OO_Arrow:
     case OO_Star:
+    case OO_Subscript:
     case OO_Plus:
     case OO_Minus:
     case OO_PlusPlus:

@@ -126,6 +126,22 @@ public:
   virtual void reportNoescapeViolation(const ParmVarDecl *ParmWithNoescape,
                                        const VarDecl *EscapeGlobal) {}
 
+  // Reports an interior invalidation of the object a parameter refers to when
+  // the parameter is not marked [[clang::lifetime_exclusive]]. `Requirer` is
+  // the declaration whose contract demanded exclusive access (a parameter of
+  // the callee, or the invalidating member function).
+  virtual void reportExclusivityViolation(const ParmVarDecl *PVD,
+                                          const Expr *InvalidationExpr,
+                                          const Decl *Requirer) {}
+  virtual void reportExclusivityViolation(const CXXMethodDecl *MD,
+                                          const Expr *InvalidationExpr,
+                                          const Decl *Requirer) {}
+  // Reports an argument that aliases the object passed, in the same call, to a
+  // [[clang::lifetime_exclusive]] parameter (`ExclusiveArg`).
+  virtual void reportExclusiveAliasing(const Expr *AliasingArg,
+                                       const Expr *ExclusiveArg,
+                                       const Decl *Requirer) {}
+
   // Reports misuse of [[clang::lifetimebound]] when parameter doesn't escape
   // through return.
   virtual void

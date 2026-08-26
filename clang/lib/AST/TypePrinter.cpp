@@ -1964,6 +1964,10 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
     OS << " [[clang::lifetimebound]]";
     return;
   }
+  if (T->getAttrKind() == attr::LifetimeExclusive) {
+    OS << " [[clang::lifetime_exclusive]]";
+    return;
+  }
   if (T->getAttrKind() == attr::LifetimeCaptureBy) {
     OS << " [[clang::lifetime_capture_by(";
     if (auto *attr = dyn_cast_or_null<LifetimeCaptureByAttr>(T->getAttr()))
@@ -2050,6 +2054,7 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
   case attr::SizedBy:
   case attr::SizedByOrNull:
   case attr::LifetimeBound:
+  case attr::LifetimeExclusive:
   case attr::LifetimeCaptureBy:
   case attr::TypeNonNull:
   case attr::TypeNullable:

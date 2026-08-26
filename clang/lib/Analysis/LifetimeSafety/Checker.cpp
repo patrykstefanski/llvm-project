@@ -24,6 +24,8 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TimeProfiler.h"
 
@@ -60,6 +62,11 @@ private:
   llvm::DenseMap<LoanID, PendingWarning> FinalWarningsMap;
   llvm::DenseMap<AnnotationTarget, EscapingTarget> AnnotationWarningsMap;
   llvm::DenseMap<const ParmVarDecl *, EscapingTarget> NoescapeWarningsMap;
+  /// Parameters (or implicit object parameters) whose referent is invalidated
+  /// although they are not [[clang::lifetime_exclusive]], with the first
+  /// offending invalidation.
+  llvm::MapVector<AnnotationTarget, const InvalidateOriginFact *>
+      ExclusivityWarningsMap;
   llvm::DenseSet<const Decl *> VerifiedLiftimeboundEscapes;
   const LoanPropagationAnalysis &LoanPropagation;
   const MovedLoansAnalysis &MovedLoans;
@@ -106,6 +113,7 @@ public:
     issuePendingWarnings();
     suggestAnnotations();
     reportNoescapeViolations();
+    reportExclusivityViolations();
     reportLifetimeboundViolations();
     reportMisplacedLifetimebound();
     reportInapplicableLifetimebound();
@@ -231,10 +239,27 @@ public:
       }
       return false;
     };
+    checkExclusivityContract(IOF, DirectlyInvalidatedLoans);
+    checkExclusiveAliasing(IOF, DirectlyInvalidatedLoans);
+    // A move transfers the contents to the move target; borrows of them are
+    // handled by the MovedLoans downgrade rather than reported here.
+    if (IOF->getInvalidationKind() ==
+        InvalidateOriginFact::InvalidationKind::Consume)
+      return;
     // For each live origin, check if it holds an invalidated loan and report.
     LiveOriginSet Origins = LiveOrigins.getLiveOriginsAt(IOF);
     for (const LivenessMap &Live : {Origins.Persistent, Origins.BlockLocal})
       for (auto &[OID, LiveInfo] : Live) {
+        // The origin the invalidation is performed through is not a victim of
+        // it: in `v.push_back(1); v.push_back(2);` the second call does not use
+        // a dangling `v`.
+        if (OID == InvalidatedOrigin)
+          continue;
+        // An interior invalidation leaves the object itself intact, so other
+        // references *to* the object (as opposed to *into* it) stay valid.
+        if (IOF->isInteriorInvalidation() &&
+            refersToObjectItself(OID, IOF->getReferentType()))
+          continue;
         LoanSet HeldLoans = LoanPropagation.getLoans(OID, IOF);
         for (LoanID LiveLoanID : HeldLoans)
           if (IsInvalidated(FactMgr.getLoanMgr().getLoan(LiveLoanID))) {
@@ -251,6 +276,113 @@ public:
             }
           }
       }
+  }
+
+  /// Returns the type of the object that origin `OID` refers to, or a null
+  /// type if it cannot be determined.
+  QualType getReferentTypeOfOrigin(OriginID OID) const {
+    const Origin &O = FactMgr.getOriginMgr().getOrigin(OID);
+    QualType T;
+    if (O.Ty)
+      T = QualType(O.Ty, 0);
+    else if (const Expr *E = O.getExpr())
+      // The synthetic storage origin of a glvalue refers to the glvalue's
+      // object.
+      T = E->getType();
+    else if (const ValueDecl *D = O.getDecl())
+      T = D->getType();
+    if (T.isNull())
+      return T;
+    if (T->isPointerOrReferenceType())
+      return T->getPointeeType();
+    if (isGslPointerType(T))
+      return getGslPointerDerefType(T);
+    return T;
+  }
+
+  /// Whether origin `OID` refers to an object of type `ReferentTy` itself,
+  /// rather than to something inside such an object. Used to keep references
+  /// to a container valid across an interior invalidation of the container.
+  /// This is a type-based approximation: loans do not (yet) distinguish an
+  /// object from its interior.
+  bool refersToObjectItself(OriginID OID, QualType ReferentTy) const {
+    if (ReferentTy.isNull())
+      return false;
+    QualType T = getReferentTypeOfOrigin(OID);
+    return !T.isNull() && AST.hasSameUnqualifiedType(T, ReferentTy);
+  }
+
+  /// Checks the [[clang::lifetime_exclusive]] contract of the analysed
+  /// function: an interior invalidation of an object reachable through a
+  /// parameter is only permitted if that parameter is exclusive (or an rvalue
+  /// reference, which is exclusive by nature).
+  void checkExclusivityContract(const InvalidateOriginFact *IOF,
+                                const LoanSet &InvalidatedLoans) {
+    if (!IOF->requiresExclusiveAccess())
+      return;
+    for (LoanID LID : InvalidatedLoans) {
+      const Loan *L = FactMgr.getLoanMgr().getLoan(LID);
+      const PlaceholderBase *PB = L->getAccessPath().getAsPlaceholderBase();
+      if (!PB)
+        continue;
+      if (const ParmVarDecl *PVD = PB->getParmVarDecl()) {
+        if (isLifetimeExclusiveParam(PVD) ||
+            PVD->getType()->isRValueReferenceType())
+          continue;
+        ExclusivityWarningsMap.try_emplace(PVD, IOF);
+      } else if (const CXXMethodDecl *MD = PB->getImplicitThisParent()) {
+        if (implicitObjectParamIsLifetimeExclusive(MD))
+          continue;
+        ExclusivityWarningsMap.try_emplace(MD, IOF);
+      }
+    }
+  }
+
+  /// Checks that no other argument of a call aliases the object passed to a
+  /// [[clang::lifetime_exclusive]] parameter of the same call.
+  void checkExclusiveAliasing(const InvalidateOriginFact *IOF,
+                              const LoanSet &InvalidatedLoans) {
+    if (!SemaHelper || !IOF->isExplicitContract() ||
+        IOF->getSiblingArgs().empty())
+      return;
+    auto Overlaps = [&](const Loan *A, const Loan *B) {
+      return A->getAccessPath().isPrefixOf(B->getAccessPath()) ||
+             B->getAccessPath().isPrefixOf(A->getAccessPath());
+    };
+    const Expr *ExclusiveArg =
+        FactMgr.getOriginMgr().getOrigin(IOF->getInvalidatedOrigin()).getExpr();
+    if (!ExclusiveArg)
+      ExclusiveArg = IOF->getInvalidationExpr();
+    llvm::SmallPtrSet<const Expr *, 2> Reported;
+    for (const auto &[SiblingOID, SiblingExpr] : IOF->getSiblingArgs()) {
+      if (Reported.contains(SiblingExpr))
+        continue;
+      for (LoanID SLID : LoanPropagation.getLoans(SiblingOID, IOF)) {
+        const Loan *SL = FactMgr.getLoanMgr().getLoan(SLID);
+        bool Aliases = llvm::any_of(InvalidatedLoans, [&](LoanID ILID) {
+          return Overlaps(FactMgr.getLoanMgr().getLoan(ILID), SL);
+        });
+        if (!Aliases)
+          continue;
+        Reported.insert(SiblingExpr);
+        SemaHelper->reportExclusiveAliasing(SiblingExpr, ExclusiveArg,
+                                            IOF->getRequirer());
+        break;
+      }
+    }
+  }
+
+  void reportExclusivityViolations() {
+    if (!SemaHelper)
+      return;
+    for (const auto &[Target, IOF] : ExclusivityWarningsMap) {
+      if (const auto *PVD = Target.dyn_cast<const ParmVarDecl *>())
+        SemaHelper->reportExclusivityViolation(PVD, IOF->getInvalidationExpr(),
+                                               IOF->getRequirer());
+      else if (const auto *MD = Target.dyn_cast<const CXXMethodDecl *>())
+        SemaHelper->reportExclusivityViolation(MD, IOF->getInvalidationExpr(),
+                                               IOF->getRequirer());
+    }
   }
 
   void issuePendingWarnings() {

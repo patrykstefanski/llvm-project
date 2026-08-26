@@ -266,25 +266,73 @@ public:
             const LoanPropagationAnalysis *LPA = nullptr) const override;
 };
 
-/// Represents that an origin's storage has been invalidated by a container
-/// operation (e.g., vector::push_back may reallocate, invalidating iterators).
-/// Created when a container method that may invalidate references/iterators
-/// is called on the container.
+/// Represents that the object an origin refers to has been invalidated.
+///
+/// Three flavours exist. A `Destroy` invalidation ends the object itself
+/// (`delete`, a destructor call): every reference to or into it dangles. An
+/// `Interior` invalidation keeps the object alive but may reallocate or
+/// destroy its interior: a container mutation such as `vector::push_back`, or
+/// a call passing the object to a `[[clang::lifetime_exclusive]]` parameter.
+/// References *into* the object dangle while references *to* the object stay
+/// valid. A `Consume` invalidation is a move out of the object (it is passed
+/// to an rvalue reference parameter): the move target now owns the contents,
+/// so borrows of them are not reported as dangling (see MovedLoans), but the
+/// operation still requires exclusive access to the object.
 class InvalidateOriginFact : public Fact {
+public:
+  enum class InvalidationKind : uint8_t { Destroy, Interior, Consume };
+  using SiblingArg = std::pair<OriginID, const Expr *>;
+
+private:
   OriginID OID;
   const Expr *InvalidationExpr;
+  InvalidationKind IKind;
+  /// The declaration whose contract demands exclusive access for this
+  /// invalidation: the `[[clang::lifetime_exclusive]]` (or rvalue reference)
+  /// parameter the object is passed to, or the invalidating member function
+  /// called on it. Null for `Destroy` invalidations.
+  const Decl *Requirer;
+  /// True when `Requirer` carries an explicit `[[clang::lifetime_exclusive]]`.
+  bool IsExplicit;
+  /// For `Interior` invalidations, the type of the invalidated object. An
+  /// origin referring to an object of this type refers to the object itself,
+  /// not into it, and is therefore not invalidated.
+  QualType ReferentType;
+  /// For explicit contracts, the origins of the other arguments of the same
+  /// call. They must not alias the exclusively borrowed object.
+  llvm::SmallVector<SiblingArg, 2> SiblingArgs;
 
 public:
   static bool classof(const Fact *F) {
     return F->getKind() == Kind::InvalidateOrigin;
   }
 
-  InvalidateOriginFact(OriginID OID, const Expr *InvalidationExpr)
+  InvalidateOriginFact(OriginID OID, const Expr *InvalidationExpr,
+                       InvalidationKind IKind = InvalidationKind::Destroy,
+                       const Decl *Requirer = nullptr, bool IsExplicit = false,
+                       QualType ReferentType = QualType())
       : Fact(Kind::InvalidateOrigin), OID(OID),
-        InvalidationExpr(InvalidationExpr) {}
+        InvalidationExpr(InvalidationExpr), IKind(IKind), Requirer(Requirer),
+        IsExplicit(IsExplicit), ReferentType(ReferentType) {}
 
   OriginID getInvalidatedOrigin() const { return OID; }
   const Expr *getInvalidationExpr() const { return InvalidationExpr; }
+  InvalidationKind getInvalidationKind() const { return IKind; }
+  bool isInteriorInvalidation() const {
+    return IKind == InvalidationKind::Interior;
+  }
+  /// Whether performing this invalidation requires exclusive access to the
+  /// object (i.e. it is subject to the [[clang::lifetime_exclusive]] contract).
+  bool requiresExclusiveAccess() const {
+    return IKind != InvalidationKind::Destroy;
+  }
+  const Decl *getRequirer() const { return Requirer; }
+  bool isExplicitContract() const { return IsExplicit; }
+  QualType getReferentType() const { return ReferentType; }
+  void addSiblingArg(OriginID SiblingOID, const Expr *Arg) {
+    SiblingArgs.emplace_back(SiblingOID, Arg);
+  }
+  llvm::ArrayRef<SiblingArg> getSiblingArgs() const { return SiblingArgs; }
   void dump(llvm::raw_ostream &OS, const LoanManager &, const OriginManager &OM,
             const LoanPropagationAnalysis *LPA = nullptr) const override;
 };

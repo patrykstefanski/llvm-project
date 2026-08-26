@@ -63,7 +63,14 @@ void FactManager::computePersistentOrigins(const CFG &Cfg) {
       case Fact::Kind::MovedOrigin:
       case Fact::Kind::Expire:
       case Fact::Kind::TestPoint:
+        break;
       case Fact::Kind::InvalidateOrigin:
+        // The sibling arguments of an exclusive call are read by the checker
+        // at the invalidation point, which may lie in a later block than the
+        // one that computed them (e.g. a conditional-operator argument).
+        for (const auto &[SiblingOID, SiblingExpr] :
+             F->getAs<InvalidateOriginFact>()->getSiblingArgs())
+          CheckOrigin(SiblingOID);
         break;
       }
     }
@@ -175,6 +182,17 @@ void InvalidateOriginFact::dump(llvm::raw_ostream &OS, const LoanManager &,
                                 const LoanPropagationAnalysis *) const {
   OS << "InvalidateOrigin (";
   OM.dump(getInvalidatedOrigin(), OS);
+  if (isInteriorInvalidation())
+    OS << ", Interior";
+  else if (getInvalidationKind() == InvalidationKind::Consume)
+    OS << ", Consume";
+  if (const auto *ND = dyn_cast_or_null<NamedDecl>(getRequirer()))
+    OS << ", RequiredBy: " << ND->getNameAsString()
+       << (isExplicitContract() ? " [exclusive]" : "");
+  for (const auto &[SiblingOID, SiblingExpr] : getSiblingArgs()) {
+    OS << ", Sibling: ";
+    OM.dump(SiblingOID, OS);
+  }
   OS << ")\n";
 }
 

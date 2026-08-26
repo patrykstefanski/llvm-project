@@ -60,6 +60,8 @@ inline bool IsLifetimeSafetyEnabled(Sema &S, const Decl *D) {
       diag::warn_lifetime_safety_dangling_global,
       diag::warn_lifetime_safety_dangling_global_moved,
       diag::warn_lifetime_safety_noescape_escapes,
+      diag::warn_lifetime_safety_exclusivity_violation,
+      diag::warn_lifetime_safety_exclusivity_alias,
       diag::warn_lifetime_safety_lifetimebound_violation,
       diag::warn_lifetime_safety_cross_tu_misplaced_lifetimebound,
       diag::warn_lifetime_safety_intra_tu_misplaced_lifetimebound,
@@ -428,6 +430,58 @@ public:
     S.Diag(EscapeExpr->getBeginLoc(),
            diag::note_lifetime_safety_suggestion_returned_here)
         << EscapeExpr->getSourceRange();
+  }
+
+  // Describes the declaration whose contract demands exclusive access, e.g.
+  // "parameter 'v' of 'my_push_back'" or "member function 'push_back'".
+  std::string getExclusiveRequirerDescription(const Decl *D) {
+    std::string Res;
+    llvm::raw_string_ostream OS(Res);
+    if (const auto *PVD = dyn_cast_or_null<ParmVarDecl>(D)) {
+      if (PVD->getType()->isRValueReferenceType() &&
+          !PVD->hasAttr<LifetimeExclusiveAttr>())
+        OS << "rvalue reference parameter";
+      else
+        OS << "parameter '" << PVD->getName() << "'";
+      if (const auto *FD = dyn_cast<FunctionDecl>(PVD->getDeclContext()))
+        OS << " of '" << FD->getNameAsString() << "'";
+    } else if (const auto *MD = dyn_cast_or_null<CXXMethodDecl>(D)) {
+      OS << "member function '" << MD->getNameAsString() << "'";
+    } else {
+      OS << "the callee";
+    }
+    return Res;
+  }
+
+  void noteExclusiveAccess(const Expr *At, const Decl *Requirer) {
+    S.Diag(At->getExprLoc(), diag::note_lifetime_safety_exclusive_access_here)
+        << getExclusiveRequirerDescription(Requirer) << At->getSourceRange();
+  }
+
+  void reportExclusivityViolation(const ParmVarDecl *PVD,
+                                  const Expr *InvalidationExpr,
+                                  const Decl *Requirer) override {
+    S.Diag(PVD->getBeginLoc(), diag::warn_lifetime_safety_exclusivity_violation)
+        << getDiagSubjectDescription(PVD) << PVD->getSourceRange();
+    noteExclusiveAccess(InvalidationExpr, Requirer);
+  }
+
+  void reportExclusivityViolation(const CXXMethodDecl *MD,
+                                  const Expr *InvalidationExpr,
+                                  const Decl *Requirer) override {
+    S.Diag(MD->getLocation(), diag::warn_lifetime_safety_exclusivity_violation)
+        << "implicit object parameter" << MD->getSourceRange();
+    noteExclusiveAccess(InvalidationExpr, Requirer);
+  }
+
+  void reportExclusiveAliasing(const Expr *AliasingArg,
+                               const Expr *ExclusiveArg,
+                               const Decl *Requirer) override {
+    S.Diag(AliasingArg->getExprLoc(),
+           diag::warn_lifetime_safety_exclusivity_alias)
+        << getExclusiveRequirerDescription(Requirer)
+        << AliasingArg->getSourceRange();
+    noteExclusiveAccess(ExclusiveArg, Requirer);
   }
 
   void reportNoescapeViolation(const ParmVarDecl *ParmWithNoescape,

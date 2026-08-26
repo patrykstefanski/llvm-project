@@ -949,26 +949,110 @@ void FactsGenerator::handleMovedArgsInCall(const FunctionDecl *FD,
   }
 }
 
+/// Strips the wrappers between an argument expression and the object it
+/// designates: parentheses, implicit casts and std reference casts
+/// (`std::move(x)` designates `x`).
+static const Expr *getDesignatedObject(const Expr *E) {
+  while (true) {
+    E = E->IgnoreParenImpCasts();
+    if (const auto *CE = dyn_cast<CallExpr>(E);
+        CE && CE->getNumArgs() == 1 &&
+        isStdReferenceCast(CE->getDirectCallee())) {
+      E = CE->getArg(0);
+      continue;
+    }
+    return E;
+  }
+}
+
+/// Returns the type of the object a parameter of type `ParamTy` refers to
+/// (through a reference, a pointer or a gsl::Pointer view), or a null type.
+static QualType getReferentType(QualType ParamTy) {
+  if (ParamTy->isPointerOrReferenceType())
+    return ParamTy->getPointeeType();
+  if (isGslPointerType(ParamTy))
+    return getGslPointerDerefType(ParamTy);
+  return QualType();
+}
+
 void FactsGenerator::handleInvalidatingCall(const Expr *Call,
                                             const FunctionDecl *FD,
                                             ArrayRef<const Expr *> Args) {
   const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-  if (!MD || !MD->isInstance())
-    return;
+  // Constructors are excluded because Args has no object argument for them,
+  // even though isImplicitObjectMemberFunction() is true.
+  const bool HasObjectArg = MD && !isa<CXXConstructorDecl>(FD) &&
+                            MD->isImplicitObjectMemberFunction();
+  const unsigned Offset = HasObjectArg ? 1 : 0;
 
-  if (!isInvalidationMethod(*MD))
-    return;
+  for (unsigned I = 0; I < Args.size(); ++I) {
+    // Find the contract under which the callee may invalidate the referent of
+    // this argument, if any.
+    const Decl *Requirer = nullptr;
+    bool IsExplicit = false;
+    bool IsStlModel = false;
+    auto Kind = InvalidateOriginFact::InvalidationKind::Interior;
+    QualType ReferentTy;
+    if (HasObjectArg && I == 0) {
+      if (implicitObjectParamIsLifetimeExclusive(MD))
+        IsExplicit = true;
+      else if (isInvalidationMethod(*MD))
+        IsStlModel = true;
+      else
+        continue;
+      Requirer = MD;
+      ReferentTy = MD->getFunctionObjectParameterType();
+    } else if (I - Offset < FD->getNumParams()) {
+      const ParmVarDecl *PVD = FD->getParamDecl(I - Offset);
+      if (PVD->isExplicitObjectParameter())
+        continue;
+      if (isLifetimeExclusiveParam(PVD))
+        IsExplicit = true;
+      // An rvalue reference parameter consumes its argument, i.e. it may move
+      // out of the referent. Lifetime-annotated ones only borrow (see
+      // handleMovedArgsInCall).
+      else if (PVD->getType()->isRValueReferenceType() &&
+               !PVD->hasAttr<LifetimeBoundAttr>() &&
+               !PVD->hasAttr<LifetimeCaptureByAttr>())
+        Kind = InvalidateOriginFact::InvalidationKind::Consume;
+      else
+        continue;
+      Requirer = PVD;
+      ReferentTy = getReferentType(PVD->getType());
+    } else {
+      continue;
+    }
 
-  // Heuristics to turn-down false positives. Skip member field expressions for
-  // now. This is not a perfect filter and will still surface some false
-  // positives (e.g. `auto& r = s.v`).
-  if (!isa<DeclRefExpr>(Args[0]->IgnoreImpCasts()))
-    return;
+    // Shape filter. A field access carries the loans of its whole containing
+    // object (see VisitMemberExpr), so an invalidation through it would
+    // invalidate every borrow of the containing object, not only those into
+    // the field. The implicit STL model keeps its original, stricter filter
+    // (the receiver must name a variable) so that its behaviour is unchanged.
+    const Expr *Object = getDesignatedObject(Args[I]);
+    if (IsStlModel ? !isa<DeclRefExpr>(Object) : isa<MemberExpr>(Object))
+      continue;
 
-  OriginList *ThisList = getOriginsList(*Args[0]);
-  if (ThisList)
-    CurrentBlockFacts.push_back(FactMgr.createFact<InvalidateOriginFact>(
-        ThisList->getOuterOriginID(), Call));
+    OriginList *ArgList = getOriginsList(*Args[I]);
+    if (!ArgList)
+      continue;
+    auto *F = FactMgr.createFact<InvalidateOriginFact>(
+        ArgList->getOuterOriginID(), Call, Kind, Requirer, IsExplicit,
+        ReferentTy);
+    // Exclusive access is incompatible with any other argument of the same
+    // call aliasing the object (cf. Rust's E0499/E0502). Record the other
+    // arguments' origins so the checker can test for overlap. Only explicit
+    // contracts get this: the STL model routinely takes iterators into the
+    // receiver (`v.erase(it)`), and a move's siblings are unconstrained.
+    if (IsExplicit)
+      for (unsigned J = 0; J < Args.size(); ++J) {
+        if (J == I)
+          continue;
+        for (OriginList *L = getOriginsList(*Args[J]); L;
+             L = L->peelOuterOrigin())
+          F->addSiblingArg(L->getOuterOriginID(), Args[J]);
+      }
+    CurrentBlockFacts.push_back(F);
+  }
 }
 
 void FactsGenerator::handleDestructiveCall(const Expr *Call,

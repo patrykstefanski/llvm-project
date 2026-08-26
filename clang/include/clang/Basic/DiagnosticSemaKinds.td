@@ -11172,6 +11172,19 @@ def warn_lifetime_safety_noescape_escapes
       InGroup<LifetimeSafetyNoescape>,
       DefaultIgnore;
 
+def warn_lifetime_safety_exclusivity_violation
+    : Warning<"%0 is not marked [[clang::lifetime_exclusive]] but the object "
+              "it refers to is invalidated">,
+      InGroup<LifetimeSafetyExclusivity>,
+      DefaultIgnore;
+def warn_lifetime_safety_exclusivity_alias
+    : Warning<"argument aliases the object that %0 requires exclusive access "
+              "to">,
+      InGroup<LifetimeSafetyExclusivity>,
+      DefaultIgnore;
+def note_lifetime_safety_exclusive_access_here
+    : Note<"%0 requires exclusive access here">;
+
 // For non-floating point, expressions of the form x == x or x != x
 // should result in a warning, since these always evaluate to a constant.
 // Array comparisons have similar warnings

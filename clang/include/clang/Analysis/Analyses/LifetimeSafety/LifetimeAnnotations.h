@@ -63,6 +63,19 @@ getImplicitObjectParamLifetimeBoundAttr(const FunctionDecl *FD);
 /// method or because it's a normal assignment operator.
 bool implicitObjectParamIsLifetimeBound(const FunctionDecl *FD);
 
+/// Returns true if the parameter carries [[clang::lifetime_exclusive]] on any
+/// redeclaration of its function.
+bool isLifetimeExclusiveParam(const ParmVarDecl *PVD);
+
+/// Returns true if the implicit object parameter (this) carries
+/// [[clang::lifetime_exclusive]] on any redeclaration.
+bool implicitObjectParamIsLifetimeExclusive(const FunctionDecl *FD);
+
+/// For a gsl::Pointer type, returns the type of the object it refers to: the
+/// attribute's DerefType if given, else the first type template argument (for
+/// the standard views that get the attribute inferred). Null otherwise.
+QualType getGslPointerDerefType(QualType QT);
+
 using LifetimeBoundParamInfo =
     llvm::PointerUnion<const ParmVarDecl *, const CXXMethodDecl *>;
 

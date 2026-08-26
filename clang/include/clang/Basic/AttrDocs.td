@@ -4702,6 +4702,46 @@ It is only supported when using the Microsoft C++ ABI.
   }];
 }
 
+def LifetimeExclusiveDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``lifetime_exclusive`` attribute on a reference, pointer or view parameter,
+or on the implicit object parameter of a member function, declares that the
+function may *invalidate* the object the parameter refers to: it may
+reallocate, destroy or move out of the object's interior, so references,
+pointers, iterators and views into that object which exist before the call may
+dangle after it. This is the C++ analogue of a Rust ``&mut`` parameter, as far
+as invalidation is concerned. A parameter without the attribute promises not to
+invalidate its referent (it may still modify it in place).
+
+.. code-block:: c++
+
+  void my_set(std::vector<int> &v, size_t i, int val) { v[i] = val; }
+  void my_push_back(std::vector<int> &v [[clang::lifetime_exclusive]], int val) {
+    v.push_back(val);
+  }
+
+  struct Vec {
+    void set(size_t i, int val);
+    void push_back(int val) [[clang::lifetime_exclusive]];
+  };
+
+The attribute is consumed by the experimental lifetime safety analysis
+(``-Wlifetime-safety``), which uses it in three ways:
+
+* At a call site, passing an argument to an exclusive parameter invalidates
+  every other live reference into the argument's referent, so a later use of
+  such a reference is reported (``-Wlifetime-safety-invalidation``).
+* In the same call, any other argument that aliases the exclusively borrowed
+  object is reported (``-Wlifetime-safety-exclusivity``).
+* Inside a function, invalidating the referent of a parameter that is *not*
+  marked ``lifetime_exclusive`` violates the parameter's implicit promise and is
+  reported (``-Wlifetime-safety-exclusivity``). Standard container members that
+  invalidate iterators (``push_back``, ``erase``, ...) and rvalue reference
+  parameters are treated as implicitly exclusive.
+  }];
+}
+
 def LifetimeBoundDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{

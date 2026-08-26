@@ -634,6 +634,15 @@ Warning to detect invalidation of references.
   }];
 }
 
+def LifetimeSafetyExclusivity : DiagGroup<"lifetime-safety-exclusivity"> {
+  code Documentation = [{
+Warnings that check the [[clang::lifetime_exclusive]] contract: a function
+that invalidates the object a parameter refers to must mark that parameter
+[[clang::lifetime_exclusive]], and no other argument of a call may alias an
+object passed to an exclusive parameter.
+  }];
+}
+
 def LifetimeSafetyLifetimeboundViolation : DiagGroup<"lifetime-safety-lifetimebound-violation"> {
   code Documentation = [{
 Detects parameters marked as [[clang::lifetimebound]] for which the analysis could not verify that the return value can be lifetime bound to the parameter.

@@ -205,6 +205,7 @@ template<typename T>
 struct span {
   span();
   span(const vector<T>&);
+  T& operator[](unsigned) const;
 };
 
 template<class _Mystr> struct iter {

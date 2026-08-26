@@ -3484,6 +3484,7 @@ static void mergeParamDeclAttributes(ParmVarDecl *newDecl,
         // 'this' parameter, as the attribute is applied to the function type in
         // that case.
         found += propagateAttribute<LifetimeBoundAttr>(To, From, S);
+        found += propagateAttribute<LifetimeExclusiveAttr>(To, From, S);
         return found;
       });
 }

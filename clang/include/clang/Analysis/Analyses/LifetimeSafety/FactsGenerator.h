@@ -115,8 +115,13 @@ private:
   ///   argument origins should flow to the returned origin.
   void handleFunctionCall(const Expr *Call, bool IsGslConstruction = false);
 
-  // Detect methods that invalidate iterators/references/pointees.
-  // For instance methods, Args[0] is the implicit 'this' pointer.
+  /// Detects arguments whose referent the callee may invalidate and creates an
+  /// `Interior` InvalidateOriginFact for each of them. Three contracts permit
+  /// such an invalidation: a `[[clang::lifetime_exclusive]]` parameter or
+  /// implicit object parameter (explicit contract), an rvalue reference
+  /// parameter (the argument is moved from), and the standard-library
+  /// container members known to invalidate iterators/references (the implicit
+  /// STL model; for instance methods, Args[0] is the implicit 'this').
   void handleInvalidatingCall(const Expr *Call, const FunctionDecl *FD,
                               ArrayRef<const Expr *> Args);
 

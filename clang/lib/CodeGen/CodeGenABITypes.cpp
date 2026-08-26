@@ -76,6 +76,25 @@ const CGFunctionInfo &CodeGen::arrangeFreeFunctionCall(
       returnType, FnInfoOpts::None, argTypes, info, paramInfos, args);
 }
 
+void CodeGen::emitVirtualMethodTables(CodeGenModule &CGM,
+                                      const CXXMethodDecl *MD) {
+  // TODO: A destructor is not supported yet.
+  assert(!isa<CXXDestructorDecl>(MD) && "destructors are not supported");
+
+  if (!MD->isVirtual())
+    return;
+
+  // The vtable, VTT, and RTTI are emitted with the key function's definition.
+  const CXXRecordDecl *RD = MD->getParent();
+  if (CGM.getContext().getCurrentKeyFunction(RD) == MD->getCanonicalDecl()) {
+    CGM.noteClientDefinedKeyFunction(RD);
+    CGM.EmitVTable(const_cast<CXXRecordDecl *>(RD));
+  }
+
+  // A method's adjusting thunks are emitted with its definition.
+  CGM.getVTables().EmitThunks(GlobalDecl(MD));
+}
+
 ImplicitCXXConstructorArgs
 CodeGen::getImplicitCXXConstructorArgs(CodeGenModule &CGM,
                                        const CXXConstructorDecl *D) {

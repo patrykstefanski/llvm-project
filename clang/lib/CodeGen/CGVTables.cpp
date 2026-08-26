@@ -1101,6 +1101,10 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
     const FunctionDecl *def = nullptr;
     if (keyFunction && keyFunction->hasBody(def))
       keyFunction = cast<CXXMethodDecl>(def);
+    else if (keyFunction && hasClientDefinedKeyFunction(RD))
+      // The client defines the key function's body itself, so the vtable is
+      // defined here just as if that body were in this translation unit.
+      def = keyFunction;
 
     bool IsExternalDefinition =
         IsInNamedModule ? RD->shouldEmitInExternalSource() : !def;
@@ -1246,9 +1250,9 @@ bool CodeGenVTables::isVTableExternal(const CXXRecordDecl *RD) {
   if (!keyFunction)
     return false;
 
-  // Otherwise, if we don't have a definition of the key function, the
-  // vtable must be defined somewhere else.
-  return !keyFunction->hasBody();
+  // Otherwise, if we don't have a definition of the key function, in the AST
+  // or provided by the client, the vtable must be defined somewhere else.
+  return !keyFunction->hasBody() && !CGM.hasClientDefinedKeyFunction(RD);
 }
 
 /// Given that we're currently at the end of the translation unit, and
